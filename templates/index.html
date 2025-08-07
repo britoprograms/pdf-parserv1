@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>JETRO</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Orbitron', sans-serif;
+            background-color: #1e1e1e;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: linear-gradient(90deg, #3a3a3a, #2a2a2a);
+            color: #ffffff;
+            padding: 1em;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+        }
+        .tab-section {
+            padding: 2em;
+            max-width: 600px;
+            margin: auto;
+        }
+        h1, h2 {
+            margin-bottom: 0.5em;
+        }
+        input[type="file"], input[type="text"] {
+            width: 100%;
+            padding: 0.5em;
+            margin-bottom: 1em;
+            border: 1px solid #555;
+            border-radius: 5px;
+            background-color: #2a2a2a;
+            color: #ffffff;
+        }
+        button {
+            background-color: #ffffff;
+            color: #1e1e1e;
+            border: none;
+            padding: 0.5em 1em;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #dddddd;
+        }
+        .tab-buttons {
+            text-align: center;
+            margin-bottom: 2em;
+        }
+        .tab {
+            display: none;
+        }
+        .tab.active {
+            display: block;
+        }
+        #spinner {
+            display: none;
+            text-align: center;
+            margin-top: 10px;
+        }
+        footer {
+            text-align: center;
+            padding: 1em;
+            font-size: 0.9em;
+            color: #aaaaaa;
+            margin-top: 3em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Jetro Distribution Center PO Directory</h1>
+    </header>
+
+    <div class="tab-buttons">
+        <button onclick="showTab('upload')">Upload & Translate</button>
+        <button onclick="showTab('search')">Search PO</button>
+    </div>
+
+    <div id="upload" class="tab active tab-section">
+        <h2>Upload PDF</h2>
+        <input type="file" id="pdfFile">
+        <button onclick="uploadPDF()">Upload</button>
+        <div id="spinner"><p>Loading...</p></div>
+        <p id="uploadResult"></p>
+    </div>
+
+    <div id="search" class="tab tab-section">
+        <h2>Search Our PO</h2>
+        <input type="text" id="poInput" placeholder="Enter PO (e.g., 436-10432)">
+        <button onclick="searchPO()">Search</button>
+        <p id="searchResult"></p>
+    </div>
+
+    <footer>
+        &copy; Jetro Restaurant Depot
+    </footer>
+
+    <script>
+        function showTab(tab) {
+            document.getElementById('upload').classList.remove('active');
+            document.getElementById('search').classList.remove('active');
+            document.getElementById(tab).classList.add('active');
+        }
+
+        async function uploadPDF() {
+            const file = document.getElementById('pdfFile').files[0];
+            if (!file) {
+                document.getElementById('uploadResult').innerText = "Please select a file.";
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            document.getElementById('spinner').style.display = 'block';
+            document.getElementById('uploadResult').innerText = "";
+
+            try {
+                const res = await fetch('/upload/', { method: 'POST', body: formData });
+                const data = await res.json();
+                document.getElementById('uploadResult').innerText = JSON.stringify(data);
+            } catch (err) {
+                document.getElementById('uploadResult').innerText = "Error uploading file.";
+            } finally {
+                document.getElementById('spinner').style.display = 'none';
+            }
+        }
+
+        async function searchPO() {
+            const po = document.getElementById('poInput').value.trim();
+            if (!po) {
+                document.getElementById('searchResult').innerText = "Please enter a PO number.";
+                return;
+            }
+
+            const res = await fetch(`/search/${po}`);
+            const data = await res.json();
+            if (res.ok) {
+                document.getElementById('searchResult').innerHTML = `PDF: <a href="${data.pdf_link}" target="_blank">View</a>`;
+            } else {
+                document.getElementById('searchResult').innerText = data.error;
+            }
+        }
+    </script>
+</body>
+</html>
+

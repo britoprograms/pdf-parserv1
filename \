@@ -1,0 +1,209 @@
+import os
+import json
+import re 
+import fitz  # PyMuPDF
+import pytesseract
+from pdf2image import convert_from_path
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
+from langchain_ollama import OllamaLLM
+from langchain.chains import LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableSequence
+from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from PIL import Image
+
+# Create PDF storage folder if it doesn't exist
+UPLOAD_DIR = "PDF_storage"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# --- Database Setup ---
+Base = declarative_base()
+engine = create_engine("sqlite:///warehouse.db")
+Session = sessionmaker(bind=engine)
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+    id = Column(Integer, primary_key=True)
+    po_number = Column(String, unique=True, nullable=False)
+    pdf_path = Column(String, nullable=False)
+
+Base.metadata.create_all(engine)
+
+approved_stores = {"829", "899", "436", "499", "407", "115", "712"}
+
+# --- LLM Setup ---
+FEW_SHOT_PROMPT = """
+You are a warehouse AI assistant. You receive messy text from vendor purchase orders and your job is to extract the PO number and store number, and normalize those into our internal PO number system.
+
+ONLY return JSON. Do not explain or ask for input. Just respond with JSON. NEVER provide any fluff text, greetings or extra words.
+
+🎯 Goal:
+Return a single field — "translated_po" — in the format: "XXX-YYYYY"
+- XXX = 3-digit store number (from the list below)
+- YYYYY = 5-digit PO number used by our internal warehouse system
+
+✅ Approved store numbers: {{829, 899, 436, 499, 407, 115, 712}}
+
+📦 PO Normalization Rules:
+1. The PO number must be 5 digits (e.g., 10432, 00911, 83291)
+2. PO numbers may appear in many vendor formats: prefixed with letters, padded with extra digits, or containing symbols (e.g., PO#: B00911-AZ)
+3. Utilize vendor-specific formatting (like “PO#”, dashes, or letters) in order to process and translate them into our warehouse format. Extract only the true 5-digit PO number.
+4. Return only a valid JSON response. Never return explanations.
+
+⚠️ IMPORTANT: 
+- You must ONLY use the following store numbers: {{829, 899, 436, 499, 407, 115, 712}}.
+- If no valid store number is present, return:
+  {{"translated_po": "UNKNOWN"}}
+
+- Do NOT invent or assume store numbers. Only use store numbers found exactly in the input text. Do NOT assume.
+
+❌ Do not guess or add extra digits
+❌ Do not include any letters or symbols
+❌ If no valid store number is found, return:
+   {{"translated_po": "UNKNOWN"}}
+    ONLY return the following JSON object — no explanations, no helper text:
+    {{"translated_po" : 'XXX-YYYYY"}}
+
+---
+
+Examples:
+
+Input:
+"PO# 10432, Destination: 999"
+→ 999 is not an approved store number.
+Output:
+{{"translated_po": "UNKNOWN"}}
+
+Input:
+"Ship to Store: 436 — PO: 10432"
+Output:
+{{"translated_po": "436-10432"}}
+
+---
+
+Input:
+"ORDER NO. 994219. BRANCH 407"
+→ Correct PO = 94219 (ignore the extra 9)
+Output:
+{{"translated_po": "407-94219"}}
+
+---
+
+Input:
+"PO# B00911-AZ, Ship to: 115"
+→ Extract '00911' as valid PO number
+Output:
+{{"translated_po": "115-00911"}}
+
+---
+
+Input:
+"Distribution Center 712. Ref: PO-V89920091-FTL"
+→ PO = 20091 (not 89920 or 89920091)
+Output:
+{{"translated_po": "712-20091"}}
+
+---
+
+Input:
+{raw_text}
+Output:
+"""
+
+
+prompt = PromptTemplate(input_variables=["raw_text"], template=FEW_SHOT_PROMPT)
+llm = OllamaLLM(model="llama3")
+translator_chain = prompt | llm 
+#LLMChain(llm=llm, prompt=prompt)
+
+def extract_text_from_pdf(pdf_path):
+    """Try text extraction using fitz (PyMuPDF) first. Fallback to Tesseract OCR if needed."""
+    doc = fitz.open(pdf_path)
+    fitz_text = "\n".join(page.get_text() for page in doc)
+    print("🟡 PyMuPDF extracted:", len(fitz_text.strip()), "characters")
+
+    if len(fitz_text.strip()) > 100:
+        return fitz_text, "fitz"
+
+    print("⚠️ Falling back to OCR (pytesseract)...")
+    images = convert_from_path(pdf_path)
+    ocr_text = "\n".join(pytesseract.image_to_string(img) for img in images)
+    print("🟡 OCR extracted:", len(ocr_text.strip()), "characters")
+
+    return ocr_text, "ocr"
+
+def clean_pdf_text(text):
+    text = text.lower()
+    text = re.sub(r'[\n\r]+', ' ', text)
+    text = re.sub(r'[^a-z0-9#:\-. ]', '', text)
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+def extract_po_candidates(text):
+    pos = re.findall(r'\b(?:po[#:\- ]*)?(\d{5,})\b', text, re.IGNORECASE)
+    stores = re.findall(r'\b(829|899|436|499|407|115|712)\b', text)
+    return pos, stores
+
+# --- API Route ---
+@app.post("/upload/")
+async def upload_pdf(file: UploadFile = File(...)):
+    file_location = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_location, "wb") as f:
+        f.write(await file.read())
+
+    raw_text, method = extract_text_from_pdf(file_location)
+    cleaned_text = clean_pdf_text(raw_text)
+    
+    print("📄 Extracted text preview:", cleaned_text[:500])  # Show first 500 characters
+    
+
+    if not cleaned_text.strip():
+    print("❌ No text extracted from PDF. Aborting LLM call.")
+    return JSONResponse(status_code=400, content={"error": "No text extracted from PDF."})
+    print(f"✅ Using text from: {method.upper()} | Length: {len(cleaned_text)} characters")
+    print("📄 Raw text extracted from PDF:")
+    print(raw_text)
+    
+# Run prompt through LLM
+result = translator_chain.invoke({
+    "raw_text": cleaned_text,
+    "po_candidates": ", ".join(po_candidates),
+    "store_candidates": ", ".join(store_candidates)
+})
+
+# NEW: Log raw LLM result
+print("🧠 Raw LLM result:\n", result)
+
+# Continue to extract translated_po via regex...
+    
+
+json_match = re.search(r'\{.*?\}', result, re.DOTALL)
+if json_match:
+    try:
+        po_data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        print("❌ Failed to decode extracted JSON:", json_match.group())
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON structure", "raw": result})
+else:
+    print("❌ No valid JSON object found in LLM response")
+    return JSONResponse(status_code=400, content={"error": "No JSON found in response", "raw": result})
+    
+    translated_po = po_data.get("translated_po", "UNKNOWN")
+    store_code = translated_po.split("-")[0] if "-" in translated_po else "UNKNOWN"
+
+    if store_code not in approved_stores:
+        print("❌ Invalid store number detected:", store_code)
+        translated_po = "UNKNOWN"
+
+    session = Session()
+    po_entry = PurchaseOrder(po_number=translated_po, pdf_path=file_location)
+    session.add(po_entry)
+    session.commit()
+
+    return JSONResponse(content={"po_number": translated_po, "pdf_path": file_location})
