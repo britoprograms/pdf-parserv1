@@ -1,6 +1,10 @@
 
 #!/usr/bin/env python3
-# Warehouse Clerk — Textual port (compatible CSS + no TextLog)
+# Warehouse Clerk — Textual port with live theme switching
+# Keys:
+#   u = Upload (zenity or prompt)      s = Search tab + focus
+#   o = Open found PDF                 q = Quit
+#   t = Cycle theme                    T = Choose theme by name
 
 import asyncio
 import json
@@ -9,7 +13,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -37,6 +41,29 @@ APP_TITLE = "PDF PARSER TERMINAL UI"
 DB_PATH = "warehouse.db"
 PARSER = [sys.executable, "parse_cli.py"]  # uses your current Python to run parse_cli.py
 
+
+# ----------------------------- Themes -----------------------------
+
+@dataclass
+class Theme:
+    name: str
+    background: str
+    foreground: str
+    accent: str
+    surface: str
+    accent_2: str  # used where cyan was used before
+
+THEMES: List[Theme] = [
+    Theme("dark",   "#0b1020", "#e5e7eb", "#a78bfa", "#11162a", "#22d3ee"),  # original
+    Theme("bright", "#f7f7f7", "#111111", "#3b82f6", "#e5e7eb", "#0ea5e9"),
+    Theme("tokyo",  "#1a1b26", "#c0caf5", "#7aa2f7", "#24283b", "#2ac3de"),  # Tokyo Night
+    Theme("barbie", "#ffe4f1", "#5c1a3a", "#ff4fae", "#ffd1e6", "#ff86d0"),  # pink vibes
+    Theme("matrix", "#000000", "#00ff9c", "#00d084", "#001a12", "#00f0c8"),  # black/green
+    Theme("nord",   "#2e3440", "#e5e9f0", "#88c0d0", "#3b4252", "#a3be8c"),
+    Theme("gruvbox","#282828", "#ebdbb2", "#fabd2f", "#3c3836", "#83a598"),
+    Theme("dracula","#282a36", "#f8f8f2", "#bd93f9", "#1e1f29", "#8be9fd"),
+    Theme("solarlt","#fdf6e3", "#073642", "#268bd2", "#eee8d5", "#2aa198"),
+]
 
 def has_zenity() -> bool:
     return shutil.which("zenity") is not None
@@ -82,10 +109,12 @@ async def xdg_open(path: str) -> None:
     asyncio.create_task(run_subprocess("xdg-open", path))
 
 
+# ----------------------------- Widgets -----------------------------
+
 class HelpBar(Static):
     """Minimal help footer that mirrors your Go key map."""
     def compose(self) -> ComposeResult:
-        yield Label("u Upload • s Search • o Open PDF • q Quit", id="helpbar")
+        yield Label("u Upload • s Search • o Open PDF • t/T Theme • q Quit", id="helpbar")
 
 
 class StatusBar(Static):
@@ -107,7 +136,6 @@ class UploadPane(Vertical):
     DEFAULT_CSS = """
     UploadPane {
         layout: vertical;
-        /* gap: 1; (removed for compatibility) */
         padding: 0 0;
     }
     #upload_actions {
@@ -121,20 +149,18 @@ class UploadPane(Vertical):
         margin: 0 0 1 0;
     }
     #kv_table {
-        /* height: 1fr;  (keep if supported; otherwise comment out) */
-        border: round $accent;
+        border: round white; /* color overridden programmatically */
         padding: 0 0;
         margin: 0 0 1 0;
     }
     #raw_wrap {
         height: 12;
-        border: round $surface;
+        border: round white; /* color overridden programmatically */
     }
     #raw_log {
         padding: 0 1;
         content-align: left top;
         height: auto;
-        /* no special text-style used for compatibility */
     }
     """
 
@@ -193,7 +219,6 @@ class SearchPane(Vertical):
     DEFAULT_CSS = """
     SearchPane {
         layout: vertical;
-        /* gap: 1; (removed for compatibility) */
     }
     #search_bar {
         layout: horizontal;
@@ -202,7 +227,7 @@ class SearchPane(Vertical):
         margin: 0 0 1 0;
     }
     #result_box {
-        border: round $surface;
+        border: round white; /* color overridden programmatically */
         height: 6;
         padding: 1 1;
         margin: 0 0 1 0;
@@ -244,25 +269,22 @@ class SearchPane(Vertical):
             self.post_message_no_wait(SearchRequested(po))
 
 
-# Custom messages
-from textual.message import Message
+# ----------------------------- Messages -----------------------------
 
+from textual.message import Message
 
 class UploadPickRequested(Message):
     pass
-
 
 class UploadPicked(Message):
     def __init__(self, file_path: str) -> None:
         self.file_path = file_path
         super().__init__()
 
-
 class SearchRequested(Message):
     def __init__(self, po: str) -> None:
         self.po = po
         super().__init__()
-
 
 class OpenRequested(Message):
     def __init__(self, path: str) -> None:
@@ -270,72 +292,64 @@ class OpenRequested(Message):
         super().__init__()
 
 
-class WarehouseClerkApp(App):
-    CSS = """
-    $background: #0b1020;
-    $foreground: #e5e7eb;
-    $accent: #a78bfa;
-    $surface: #11162a;
-    $cyan: #22d3ee;
+# ----------------------------- App -----------------------------
 
+class WarehouseClerkApp(App):
+    # Keep CSS for layout; all colors applied programmatically for theme switching
+    CSS = """
     Screen {
-        background: $background;
-        color: $foreground;
+        /* colors set programmatically */
     }
 
     #titlebar {
         width: 1fr;
         height: 3;
         content-align: left middle;
-        background: $background;
-        color: $accent;
         padding: 0 2;
         border: none;
+        /* colors set programmatically */
     }
 
     #banner {
-        color: $accent;
         padding: 1 2;
         content-align: center middle;
+        /* color set programmatically */
     }
 
     #helpbar {
-        color: $foreground 80%;
         padding: 0 2;
         height: 1;
         content-align: center middle;
+        /* color set programmatically */
     }
 
     #statusbar {
-        border: round $surface;
         padding: 0 1;
         height: 3;
         content-align: center middle;
-        color: $foreground;
+        border: round white; /* color set programmatically */
     }
 
     TabbedContent {
-        border: round $accent;
+        border: round white; /* color set programmatically */
         margin: 1 2;
     }
 
-    /* Avoid 'text-style' for compatibility */
     Tab.-active {
-        color: $accent;
+        /* color set programmatically */
     }
 
     .label {
         width: 6;
-        color: $accent;
         content-align: right middle;
+        /* color set programmatically */
     }
 
-    /* Use 'round' instead of 'tall' borders for compatibility */
     Button {
-        border: round $surface;
+        border: round white; /* color set programmatically */
     }
     Button.-primary {
-        border: round $accent;
+        border: round white; /* color set programmatically */
     }
     """
 
@@ -343,11 +357,14 @@ class WarehouseClerkApp(App):
         Binding("u", "upload", "Upload PDF"),
         Binding("s", "focus_search", "Search PO"),
         Binding("o", "open_found", "Open Found PDF"),
+        Binding("t", "cycle_theme", "Cycle Theme"),
+        Binding("T", "choose_theme", "Choose Theme"),
         Binding("q", "quit", "Quit"),
     ]
 
     status = reactive("Ready.")
     found_pdf: Optional[str] = reactive(None)
+    theme_index: int = reactive(0)  # start at 0 ("dark")
 
     def _banner_text(self) -> str:
         text = "WAREHOUSE CLERK"
@@ -370,6 +387,11 @@ class WarehouseClerkApp(App):
         yield StatusBar(id="statusbar")
         yield HelpBar()
         yield Footer()
+
+    # ---------- Lifecycle ----------
+
+    def on_mount(self) -> None:
+        self.apply_theme(THEMES[self.theme_index])
 
     # ---------- Actions (keybindings) ----------
 
@@ -414,6 +436,24 @@ class WarehouseClerkApp(App):
         else:
             self.status = "No PDF selected/found."
 
+    def action_cycle_theme(self) -> None:
+        self.theme_index = (self.theme_index + 1) % len(THEMES)
+        self.apply_theme(THEMES[self.theme_index])
+
+    async def action_choose_theme(self) -> None:
+        name = await self.request_input(
+            f"Theme name ({', '.join(t.name for t in THEMES)}):"
+        )
+        if not name:
+            return
+        name = name.strip().lower()
+        for i, t in enumerate(THEMES):
+            if t.name == name:
+                self.theme_index = i
+                self.apply_theme(t)
+                return
+        self.status = f"Unknown theme '{name}'."
+
     # ---------- Utility ----------
 
     async def request_input(self, prompt: str) -> Optional[str]:
@@ -448,6 +488,83 @@ class WarehouseClerkApp(App):
             return await fut
         finally:
             cleanup()
+
+    def apply_theme(self, t: Theme) -> None:
+        """Apply colors to all key widgets (no CSS variables; runtime styling)."""
+        # Screen
+        self.screen.styles.background = t.background
+        self.screen.styles.color = t.foreground
+
+        # Titlebar + banner + help/status text
+        title = self.query_one("#titlebar", Static)
+        title.styles.background = t.background
+        title.styles.color = t.accent
+
+        banner = self.query_one("#banner", Static)
+        banner.styles.background = t.background
+        banner.styles.color = t.accent
+
+        helpbar_label = self.query_one("#helpbar", Label)
+        helpbar_label.styles.color = t.foreground
+
+        statusbar = self.query_one("#statusbar", StatusBar)
+        statusbar.styles.color = t.foreground
+        statusbar.styles.background = t.background
+        statusbar.styles.border_top = ("round", t.surface)
+        statusbar.styles.border_right = ("round", t.surface)
+        statusbar.styles.border_bottom = ("round", t.surface)
+        statusbar.styles.border_left = ("round", t.surface)
+
+        # Tabs container border + active tab color
+        tabs = self.query_one(TabbedContent)
+        tabs.styles.border_top = ("round", t.accent)
+        tabs.styles.border_right = ("round", t.accent)
+        tabs.styles.border_bottom = ("round", t.accent)
+        tabs.styles.border_left = ("round", t.accent)
+        tabs.styles.background = t.background
+        tabs.styles.color = t.foreground
+
+        # Labels accent
+        for lab in self.query(".label"):
+            lab.styles.color = t.accent
+
+        # Buttons border color
+        for btn in self.query(Button):
+            btn.styles.border_top = ("round", t.surface)
+            btn.styles.border_right = ("round", t.surface)
+            btn.styles.border_bottom = ("round", t.surface)
+            btn.styles.border_left = ("round", t.surface)
+            if "-primary" in (btn.classes or set()):
+                btn.styles.border_top = ("round", t.accent)
+                btn.styles.border_right = ("round", t.accent)
+                btn.styles.border_bottom = ("round", t.accent)
+                btn.styles.border_left = ("round", t.accent)
+            btn.styles.color = t.foreground
+            btn.styles.background = t.background
+
+        # Upload pane borders + table color
+        up = self.query_one("#upload_pane", UploadPane)
+        kv_table = up.query_one("#kv_table", DataTable)
+        for side in ("border_top", "border_right", "border_bottom", "border_left"):
+            setattr(kv_table.styles, side, ("round", t.accent))
+        raw_wrap = up.query_one("#raw_wrap", VerticalScroll)
+        for side in ("border_top", "border_right", "border_bottom", "border_left"):
+            setattr(raw_wrap.styles, side, ("round", t.surface))
+        up.query_one("#raw_log", Static).styles.color = t.foreground
+        up.query_one("#raw_log", Static).styles.background = t.background
+
+        # Search pane border
+        sp = self.query_one("#search_pane", SearchPane)
+        result_box = sp.query_one("#result_box", Static)
+        for side in ("border_top", "border_right", "border_bottom", "border_left"):
+            setattr(result_box.styles, side, ("round", t.surface))
+        # Inputs inherit foreground/background
+        for wid in (sp.query_one("#po_input", Input),):
+            wid.styles.color = t.foreground
+            wid.styles.background = t.background
+
+        # Ensure whole screen redraw picks up new palette
+        self.refresh()
 
     # ---------- Message handlers ----------
 
